@@ -20,7 +20,6 @@ class GestureDetector:
         self.wrist_angles_right = deque(maxlen=10)
         self.scratching_history = {'left': deque(maxlen=20), 'right': deque(maxlen=20)}
         self.rubbing_history = deque(maxlen=30)
-        self.arms_crossed_history = deque(maxlen=15)
 
         # 감지된 제스처 저장
         self.detected_gestures = []
@@ -120,49 +119,10 @@ class GestureDetector:
     def _detect_arm_gestures(self, pose_landmarks):
         """팔 관련 제스처 감지"""
         landmarks = pose_landmarks.landmark
-
-        # 팔짱 끼기
-        if self._detect_arms_crossed(landmarks):
-            self.detected_gestures.append('팔짱끼기')
-
         # 뒷짐
         if self._detect_hands_behind_back(landmarks):
             self.detected_gestures.append('팔동작/뒷짐')
 
-    def _detect_arms_crossed(self, landmarks):
-        """팔짱 끼기"""
-        left_shoulder = landmarks[self.mp_holistic.PoseLandmark.LEFT_SHOULDER.value]
-        right_shoulder = landmarks[self.mp_holistic.PoseLandmark.RIGHT_SHOULDER.value]
-        left_elbow = landmarks[self.mp_holistic.PoseLandmark.LEFT_ELBOW.value]
-        right_elbow = landmarks[self.mp_holistic.PoseLandmark.RIGHT_ELBOW.value]
-        left_wrist = landmarks[self.mp_holistic.PoseLandmark.LEFT_WRIST.value]
-        right_wrist = landmarks[self.mp_holistic.PoseLandmark.RIGHT_WRIST.value]
-
-        shoulder_center_x = (left_shoulder.x + right_shoulder.x) / 2
-
-        # 손목이 교차
-        left_wrist_crossed = left_wrist.x > shoulder_center_x
-        right_wrist_crossed = right_wrist.x < shoulder_center_x
-
-        # 손목이 어깨 높이 근처
-        shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
-        arm_length = abs(left_shoulder.y - left_elbow.y)
-
-        left_wrist_height = abs(left_wrist.y - shoulder_y)
-        right_wrist_height = abs(right_wrist.y - shoulder_y)
-
-        wrists_at_chest = (left_wrist_height < arm_length * 1.5 and
-                           right_wrist_height < arm_length * 1.5)
-
-        is_crossed = left_wrist_crossed and right_wrist_crossed and wrists_at_chest
-
-        self.arms_crossed_history.append(is_crossed)
-
-        if len(self.arms_crossed_history) >= 10:
-            recent = sum(list(self.arms_crossed_history)[-5:])
-            return recent >= 4
-
-        return False
 
     def _detect_hands_behind_back(self, landmarks):
         """뒷짐"""
@@ -197,9 +157,6 @@ class GestureDetector:
         if self._detect_hand_rubbing(left_hand_landmarks, right_hand_landmarks):
             self.detected_gestures.append('손 비비기')
 
-        # 손톱 물기
-        if self._detect_nail_biting(left_hand_landmarks, right_hand_landmarks, face_landmarks):
-            self.detected_gestures.append('손동작/손톱')
 
         # 몸 긁기
         scratch_location = self._detect_body_scratching(pose_landmarks, left_hand_landmarks,
@@ -515,7 +472,7 @@ def main():
 
                 # 감지된 제스처 화면에 표시
                 y_offset = 50
-                for gesture, confidence in gestures:
+                for gesture in gestures:
                     print(f"✅ {gesture}")
                     y_offset += 40
 
