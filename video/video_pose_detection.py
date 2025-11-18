@@ -1,8 +1,6 @@
 import cv2
 import mediapipe as mp
 import numpy as np
-import time
-from datetime import timedelta
 
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
@@ -13,11 +11,8 @@ nose_positions = []
 head_angles = []
 hand_face_distances = []
 
-# 행동 기록
-detected_actions = []
-
 def detect_head_shake(landmarks, image_width):
-    """고개 흔들기 감지"""
+    """고개 흔들기 감지 - 덜 민감한 버전"""
     nose = landmarks[mp_holistic.PoseLandmark.NOSE.value]
     nose_x = nose.x * image_width
 
@@ -83,8 +78,10 @@ def detect_head_bow(landmarks):
 
     return False
 
+
 def detect_hand_to_face(pose_landmarks, left_hand_landmarks, right_hand_landmarks, face_landmarks):
-    """손-얼굴 접촉 감지"""
+    """Holistic을 활용한 정밀한 손-얼굴 접촉 감지"""
+
     if not pose_landmarks or not face_landmarks:
         return False
 
@@ -102,13 +99,14 @@ def detect_hand_to_face(pose_landmarks, left_hand_landmarks, right_hand_landmark
 
     hand_detected = False
 
+    # 왼손 체크
     if left_hand_landmarks:
         finger_tips = [
-            left_hand_landmarks.landmark[8],
-            left_hand_landmarks.landmark[12],
-            left_hand_landmarks.landmark[16],
-            left_hand_landmarks.landmark[20],
-            left_hand_landmarks.landmark[4]
+            left_hand_landmarks.landmark[8],   # 검지
+            left_hand_landmarks.landmark[12],  # 중지
+            left_hand_landmarks.landmark[16],  # 약지
+            left_hand_landmarks.landmark[20],  # 새끼
+            left_hand_landmarks.landmark[4]    # 엄지
         ]
 
         for finger in finger_tips:
@@ -119,10 +117,10 @@ def detect_hand_to_face(pose_landmarks, left_hand_landmarks, right_hand_landmark
                 hand_detected = True
                 break
 
+    # 오른손 체크
     if right_hand_landmarks and not hand_detected:
         finger_tips = [
             right_hand_landmarks.landmark[8],
-            right_hand_landmarks.landmark[12],
             right_hand_landmarks.landmark[16],
             right_hand_landmarks.landmark[20],
             right_hand_landmarks.landmark[4]
@@ -152,41 +150,38 @@ def detect_hand_to_face(pose_landmarks, left_hand_landmarks, right_hand_landmark
 
     return False
 
-def format_timestamp(seconds):
-    """초를 MM:SS 형식으로 변환"""
-    return str(timedelta(seconds=int(seconds)))
 
 # ============================================
-# 메인 코드
+# 메인 코드: 웹캠 또는 동영상 파일 선택
 # ============================================
 
-video_source = "s.mp4"
+# 옵션 1: 웹캠 사용
+# video_source = 0
+
+# 옵션 2: mp4 파일 사용
+video_source = "hand_to_face.mp4"  # 여기에 파일 경로 입력
 
 cap = cv2.VideoCapture(video_source)
 
+# 동영상 정보 확인
 if not cap.isOpened():
-    print("❌ 비디오를 열 수 없습니다.")
+    print("❌ 비디오를 열 수 없습니다. 파일 경로를 확인하세요.")
     exit()
 
 fps = cap.get(cv2.CAP_PROP_FPS)
 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-duration = total_frames / fps
-
 print(f"📹 비디오 FPS: {fps}")
-print(f"📹 총 프레임: {total_frames}")
-print(f"⏱️  영상 길이: {format_timestamp(duration)}")
-print(f"\n처리 시작...\n")
+print(f"📹 총 프레임 수: {total_frames}")
 
-# 출력 동영상 설정
-save_output = True
+# 출력 동영상 설정 (선택사항)
+save_output = True  # True로 설정하면 결과 저장
 if save_output:
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter('output_result.mp4', fourcc, fps, (width, height))
+    out = cv2.VideoWriter('../output_result.mp4', fourcc, fps, (width, height))
 
 frame_count = 0
-start_time = time.time()
 
 with mp_holistic.Holistic(
     min_detection_confidence=0.5,
@@ -195,19 +190,11 @@ with mp_holistic.Holistic(
     while cap.isOpened():
         success, image = cap.read()
         if not success:
+            print("✅ 동영상 처리 완료!")
             break
 
         frame_count += 1
-        current_time = frame_count / fps  # 현재 영상 시간 (초)
-
-        # 진행률 표시
-        elapsed = time.time() - start_time
-        progress = (frame_count / total_frames) * 100
-        fps_processing = frame_count / elapsed if elapsed > 0 else 0
-        eta = (total_frames - frame_count) / fps_processing if fps_processing > 0 else 0
-
-        print(f"진행: {progress:.1f}% | 프레임: {frame_count}/{total_frames} | "
-              f"처리속도: {fps_processing:.1f} fps | 남은시간: {int(eta)}초", end='\r')
+        print(f"처리 중... {frame_count}/{total_frames} 프레임", end='\r')
 
         image_height, image_width, _ = image.shape
 
@@ -220,21 +207,33 @@ with mp_holistic.Holistic(
 
         # 랜드마크 그리기
         mp_drawing.draw_landmarks(
-            image, results.face_landmarks, mp_holistic.FACEMESH_CONTOURS,
+            image,
+            results.face_landmarks,
+            mp_holistic.FACEMESH_CONTOURS,
             landmark_drawing_spec=None,
-            connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_contours_style())
+            connection_drawing_spec=mp_drawing_styles
+            .get_default_face_mesh_contours_style())
 
         mp_drawing.draw_landmarks(
-            image, results.pose_landmarks, mp_holistic.POSE_CONNECTIONS,
-            landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style())
+            image,
+            results.pose_landmarks,
+            mp_holistic.POSE_CONNECTIONS,
+            landmark_drawing_spec=mp_drawing_styles
+            .get_default_pose_landmarks_style())
 
         mp_drawing.draw_landmarks(
-            image, results.left_hand_landmarks, mp_holistic.HAND_CONNECTIONS,
-            landmark_drawing_spec=mp_drawing_styles.get_default_hand_landmarks_style())
+            image,
+            results.left_hand_landmarks,
+            mp_holistic.HAND_CONNECTIONS,
+            landmark_drawing_spec=mp_drawing_styles
+            .get_default_hand_landmarks_style())
 
         mp_drawing.draw_landmarks(
-            image, results.right_hand_landmarks, mp_holistic.HAND_CONNECTIONS,
-            landmark_drawing_spec=mp_drawing_styles.get_default_hand_landmarks_style())
+            image,
+            results.right_hand_landmarks,
+            mp_holistic.HAND_CONNECTIONS,
+            landmark_drawing_spec=mp_drawing_styles
+            .get_default_hand_landmarks_style())
 
         # 제스처 감지
         if results.pose_landmarks:
@@ -247,84 +246,35 @@ with mp_holistic.Holistic(
                     results.right_hand_landmarks,
                     results.face_landmarks
             ):
-                detected_actions.append({
-                    'action': '손-얼굴 접촉',
-                    'time': current_time,
-                    'frame': frame_count
-                })
-                cv2.putText(image, "Hand to Face!", (50, 50),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                print(f"\n✋ 손-얼굴 접촉 감지! (프레임: {frame_count})")
 
             # 고개 흔들기 감지
             if detect_head_shake(landmarks, image_width):
-                detected_actions.append({
-                    'action': '고개 흔들기',
-                    'time': current_time,
-                    'frame': frame_count
-                })
-                cv2.putText(image, "Head Shake!", (50, 100),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 3)
+                print(f"\n🔄 고개 흔들기 감지! (프레임: {frame_count})")
 
             # 고개 숙이기 감지
             if detect_head_bow(landmarks):
-                detected_actions.append({
-                    'action': '고개 숙이기',
-                    'time': current_time,
-                    'frame': frame_count
-                })
-                cv2.putText(image, "Head Bow!", (50, 150),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
+                print(f"\n🙇 고개 숙이기 감지! (프레임: {frame_count})")
 
-        # 현재 시간 표시
-        cv2.putText(image, f"Time: {format_timestamp(current_time)}",
-                   (50, image_height - 60),
+        # 프레임 번호 표시
+        cv2.putText(image, f"Frame: {frame_count}/{total_frames}", (50, image_height - 30),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-        cv2.putText(image, f"Frame: {frame_count}/{total_frames}",
-                   (50, image_height - 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
+        # 결과 저장
         if save_output:
             out.write(image)
 
-        cv2.imshow('Processing...', image)
+        # 화면에 표시 (옵션)
+        cv2.imshow('MediaPipe Holistic - Video', image)
 
+        # 'q' 키로 중단 가능
         if cv2.waitKey(1) & 0xFF == ord('q'):
+            print("\n⏸️ 사용자가 중단했습니다.")
             break
 
 cap.release()
 if save_output:
     out.release()
+    print(f"\n💾 결과 저장 완료: output_result.mp4")
+
 cv2.destroyAllWindows()
-
-# 처리 완료
-total_time = time.time() - start_time
-print(f"\n\n✅ 처리 완료!")
-print(f"⏱️  총 처리 시간: {int(total_time // 60)}분 {int(total_time % 60)}초")
-print(f"⚡ 평균 처리 속도: {frame_count / total_time:.1f} fps")
-print(f"📊 실시간 대비: {(duration / total_time):.2f}배")
-
-# 행동 요약
-print(f"\n{'='*60}")
-print("📋 행동 감지 요약")
-print(f"{'='*60}")
-
-if detected_actions:
-    # 행동별로 그룹화
-    action_groups = {}
-    for action in detected_actions:
-        action_type = action['action']
-        if action_type not in action_groups:
-            action_groups[action_type] = []
-        action_groups[action_type].append(action)
-
-    for action_type, actions in action_groups.items():
-        print(f"\n🔹 {action_type}: 총 {len(actions)}회")
-        for i, action in enumerate(actions[:10], 1):  # 최대 10개만 표시
-            print(f"   {i}. {format_timestamp(action['time'])} (프레임: {action['frame']})")
-        if len(actions) > 10:
-            print(f"   ... 외 {len(actions) - 10}개 더")
-else:
-    print("감지된 행동이 없습니다.")
-
-print(f"\n💾 결과 저장: output_result.mp4")
