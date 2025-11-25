@@ -69,7 +69,7 @@ class GestureDetector:
         self.RIGID_MOVEMENT_RATIO = 0.02
 
         # === Blink (빈도 기반) ===
-        self.EAR_THRESHOLD = 0.20
+        self.EAR_THRESHOLD = 0.23  # 0.20 → 0.23 (더 민감하게)
         self.BLINK_FRAME_COUNT = max(int(self.fps * 0.05), 2)
         self.FREQUENT_BLINK_WINDOW = int(self.fps * 10)  # 10초 윈도우
         self.FREQUENT_BLINK_THRESHOLD = 15  # 10초에 15회 이상
@@ -86,7 +86,7 @@ class GestureDetector:
         self.HANDS_BEHIND_BACK_FRAME_COUNT = int(self.fps * 0.5)  # 0.5초 유지
 
         # === Hand Rubbing ===
-        self.HAND_RUBBING_DISTANCE = 0.15
+        self.HAND_RUBBING_DISTANCE = 0.25  # 0.15 → 0.25 (거리 완화)
         self.HAND_RUBBING_MOVEMENT = 0.015
         self.HAND_RUBBING_FRAME_COUNT = 20
 
@@ -797,7 +797,8 @@ class GestureDetector:
                 point = hand_landmarks.landmark[idx]
                 distance_x = abs(point.x - face_center_x)
 
-                if distance_x > face_width * 1.0 or point.y > chin.y + face_height_bottom * 0.3:
+                # 감지 범위 확대: face_width * 1.0 → 1.5
+                if distance_x > face_width * 1.5 or point.y > chin.y + face_height_bottom * 0.5:
                     continue
 
                 distances = {}
@@ -830,22 +831,25 @@ class GestureDetector:
                 left_ear_dist = math.sqrt(
                     (point.x - left_ear_center[0]) ** 2 + (point.y - left_ear_center[1]) ** 2
                 )
-                if left_ear_dist < 0.15:
+                # 귀 감지 범위 확대: 0.15 → 0.20
+                if left_ear_dist < 0.20:
                     distances['왼쪽귀터치'] = left_ear_dist
 
                 right_ear_dist = math.sqrt(
                     (point.x - right_ear_center[0]) ** 2 + (point.y - right_ear_center[1]) ** 2
                 )
-                if right_ear_dist < 0.15:
+                if right_ear_dist < 0.20:
                     distances['오른쪽귀터치'] = right_ear_dist
 
                 if distances:
                     min_region = min(distances, key=distances.get)
                     min_distance = distances[min_region]
 
-                    if min_distance < min_distance_overall:
-                        min_distance_overall = min_distance
-                        closest_region = min_region
+                    # 최대 거리 임계값 추가: 너무 멀면 감지 안 함
+                    if min_distance < 0.20:  # 새로 추가
+                        if min_distance < min_distance_overall:
+                            min_distance_overall = min_distance
+                            closest_region = min_region
 
             return closest_region
 
