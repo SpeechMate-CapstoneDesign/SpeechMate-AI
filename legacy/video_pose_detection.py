@@ -6,10 +6,10 @@ mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
 mp_holistic = mp.solutions.holistic
 
-
-nose_positions = [] # 코 위치
-head_angles = [] # 머리 위치
-hand_face_distances = [] # 손과 얼굴 사이의 거리 (Boolean 리스트)
+# 전역 변수
+nose_positions = []
+head_angles = []
+hand_face_distances = []
 
 def detect_head_shake(landmarks, image_width):
     """고개 흔들기 감지 - 덜 민감한 버전"""
@@ -70,8 +70,8 @@ def detect_head_bow(landmarks):
 
     current_angle = head_angles[-1]
 
-    if current_angle > -0.2:
-        recent_bowing = sum(1 for angle in head_angles[-5:] if angle > -0.2)
+    if current_angle > -0.15:
+        recent_bowing = sum(1 for angle in head_angles[-5:] if angle > -0.15)
         if recent_bowing >= 3:
             head_angles.clear()
             return True
@@ -80,120 +80,60 @@ def detect_head_bow(landmarks):
 
 
 def detect_hand_to_face(pose_landmarks, left_hand_landmarks, right_hand_landmarks, face_landmarks):
-    """손이 어느 부위에 있는지 구분해서 출력"""
+    """Holistic을 활용한 정밀한 손-얼굴 접촉 감지"""
 
     if not pose_landmarks or not face_landmarks:
         return False
 
-    # Face Mesh의 얼굴 주요 포인트
     nose_tip = face_landmarks.landmark[1]
     forehead = face_landmarks.landmark[10]
+    left_cheek = face_landmarks.landmark[234]
+    right_cheek = face_landmarks.landmark[454]
     chin = face_landmarks.landmark[152]
 
-    # Pose의 귀 좌표
-    left_ear = pose_landmarks.landmark[mp_holistic.PoseLandmark.LEFT_EAR.value]
-    right_ear = pose_landmarks.landmark[mp_holistic.PoseLandmark.RIGHT_EAR.value]
-
-    # 얼굴 중심은 코 기준
     face_center_x = nose_tip.x
     face_center_y = nose_tip.y
 
-    # 얼굴 크기 계산
-    face_width_half = abs(right_ear.x - left_ear.x) / 2
-    face_height_top = abs(nose_tip.y - forehead.y)
-    face_height_bottom = abs(chin.y - nose_tip.y)
-
-    # 주요 y 좌표들
-    forehead_y = forehead.y
-    chin_y = chin.y
-
-    # 귀 영역 정의 (귀는 코보다 옆에 있음)
-    left_ear_x = left_ear.x
-    right_ear_x = right_ear.x
-    ear_zone_threshold = face_width_half * 0.7  # 귀 영역 판정 기준
+    face_width = abs(right_cheek.x - left_cheek.x)
+    face_height = abs(forehead.y - chin.y)
 
     hand_detected = False
-    detected_region = None  # 감지된 부위 저장
-
-    def check_hand_region(hand_landmarks, hand_name):
-        """손의 위치를 판별하고 어느 부위인지 반환"""
-        if not hand_landmarks:
-            return None
-
-        # 21개 모든 랜드마크 체크
-        for idx in range(21):
-            point = hand_landmarks.landmark[idx]
-
-            # 턱보다 아래면 스킵
-            if point.y > chin_y:
-                continue
-
-            distance_x = abs(point.x - face_center_x)
-            distance_y_from_nose = point.y - face_center_y
-
-            # 좌우 범위 체크
-            x_in_range = distance_x < face_width_half * 1.2
-
-            # 상하 범위 체크
-            if distance_y_from_nose < 0:  # 이마 쪽
-                y_in_range = abs(distance_y_from_nose) < face_height_top * 1.35
-            else:  # 턱 쪽
-                y_in_range = distance_y_from_nose < face_height_bottom * 1.15
-
-            if x_in_range and y_in_range:
-                # 어느 부위인지 판별
-                region = classify_region(point, hand_name)
-                return region
-
-        return None
-
-    def classify_region(point, hand_name):
-        """포인트가 어느 부위에 속하는지 분류"""
-
-        # 1. 이마 위 (머리/헤어 영역)
-        if point.y < forehead_y:
-            return f"👤 {hand_name} → 머리/이마 위"
-
-        # 2. 귀 영역 (얼굴 중심에서 멀리 떨어진 좌우)
-        distance_from_center = abs(point.x - face_center_x)
-
-        if distance_from_center > ear_zone_threshold:
-            if point.x < face_center_x:  # 왼쪽
-                return f"👂 {hand_name} → 왼쪽 귀"
-            else:  # 오른쪽
-                return f"👂 {hand_name} → 오른쪽 귀"
-
-        # 3. 얼굴 영역 (세부 구분)
-        # 이마 영역
-        if point.y < nose_tip.y - face_height_top * 0.5:
-            return f"😊 {hand_name} → 이마"
-
-        # 눈/코 영역 (코 위아래)
-        elif point.y < nose_tip.y + face_height_bottom * 0.3:
-            return f"👃 {hand_name} → 눈/코"
-
-        # 입/턱 영역
-        else:
-            return f"😮 {hand_name} → 입/턱"
 
     # 왼손 체크
-    left_region = check_hand_region(left_hand_landmarks, "왼손")
-    if left_region:
-        hand_detected = True
-        detected_region = left_region
+    if left_hand_landmarks:
+        finger_tips = [
+            left_hand_landmarks.landmark[8],   # 검지
+            left_hand_landmarks.landmark[12],  # 중지
+            left_hand_landmarks.landmark[16],  # 약지
+            left_hand_landmarks.landmark[20],  # 새끼
+            left_hand_landmarks.landmark[4]    # 엄지
+        ]
+
+        for finger in finger_tips:
+            distance_x = abs(finger.x - face_center_x)
+            distance_y = abs(finger.y - face_center_y)
+
+            if distance_x < face_width * 1.2 and distance_y < face_height * 1.2:
+                hand_detected = True
+                break
 
     # 오른손 체크
-    if not hand_detected:
-        right_region = check_hand_region(right_hand_landmarks, "오른손")
-        if right_region:
-            hand_detected = True
-            detected_region = right_region
+    if right_hand_landmarks and not hand_detected:
+        finger_tips = [
+            right_hand_landmarks.landmark[8],
+            right_hand_landmarks.landmark[16],
+            right_hand_landmarks.landmark[20],
+            right_hand_landmarks.landmark[4]
+        ]
 
-    # 감지 결과 출력
-    if hand_detected and detected_region:
-        print(detected_region)
+        for finger in finger_tips:
+            distance_x = abs(finger.x - face_center_x)
+            distance_y = abs(finger.y - face_center_y)
 
-    # 히스토리 관리
+            if distance_x < face_width * 1.2 and distance_y < face_height * 1.2:
+                hand_detected = True
+                break
+
     hand_face_distances.append(hand_detected)
 
     if len(hand_face_distances) > 15:
@@ -210,22 +150,38 @@ def detect_hand_to_face(pose_landmarks, left_hand_landmarks, right_hand_landmark
 
     return False
 
+
 # ============================================
-# 메인 코드: 웹캠 사용
+# 메인 코드: 웹캠 또는 동영상 파일 선택
 # ============================================
 
-cap = cv2.VideoCapture(0)
+# 옵션 1: 웹캠 사용
+# video_source = 0
 
-# 카메라 설정 (옵션)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+# 옵션 2: mp4 파일 사용
+video_source = "input.mp4"  # 여기에 파일 경로 입력
 
+cap = cv2.VideoCapture(video_source)
+
+# 동영상 정보 확인
 if not cap.isOpened():
-    print("❌ 카메라를 열 수 없습니다.")
+    print("❌ 비디오를 열 수 없습니다. 파일 경로를 확인하세요.")
     exit()
 
-print("📹 웹캠 시작!")
-print("ESC 키를 누르면 종료됩니다.")
+fps = cap.get(cv2.CAP_PROP_FPS)
+total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+print(f"📹 비디오 FPS: {fps}")
+print(f"📹 총 프레임 수: {total_frames}")
+
+# 출력 동영상 설정 (선택사항)
+save_output = True  # True로 설정하면 결과 저장
+if save_output:
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter('../output_result.mp4', fourcc, fps, (width, height))
+
+frame_count = 0
 
 with mp_holistic.Holistic(
     min_detection_confidence=0.5,
@@ -234,8 +190,11 @@ with mp_holistic.Holistic(
     while cap.isOpened():
         success, image = cap.read()
         if not success:
-            print("카메라를 찾을 수 없습니다.")
-            continue
+            print("✅ 동영상 처리 완료!")
+            break
+
+        frame_count += 1
+        print(f"처리 중... {frame_count}/{total_frames} 프레임", end='\r')
 
         image_height, image_width, _ = image.shape
 
@@ -287,29 +246,35 @@ with mp_holistic.Holistic(
                     results.right_hand_landmarks,
                     results.face_landmarks
             ):
-                cv2.putText(image, "Hand to Face!", (50, 50),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
-                print("✋ 손-얼굴 접촉 감지!")
+                print(f"\n✋ 손-얼굴 접촉 감지! (프레임: {frame_count})")
 
             # 고개 흔들기 감지
             if detect_head_shake(landmarks, image_width):
-                cv2.putText(image, "Head Shake!", (50, 100),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 3)
-                print("🔄 고개 흔들기 감지!")
+                print(f"\n🔄 고개 흔들기 감지! (프레임: {frame_count})")
 
             # 고개 숙이기 감지
             if detect_head_bow(landmarks):
-                cv2.putText(image, "Head Bow!", (50, 150),
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 3)
-                print("🙇 고개 숙이기 감지!")
+                print(f"\n🙇 고개 숙이기 감지! (프레임: {frame_count})")
 
-        # 좌우 반전
-        cv2.imshow('MediaPipe Holistic', cv2.flip(image, 1))
+        # 프레임 번호 표시
+        cv2.putText(image, f"Frame: {frame_count}/{total_frames}", (50, image_height - 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
-        # ESC 키로 종료
-        if cv2.waitKey(5) & 0xFF == 27:
+        # 결과 저장
+        if save_output:
+            out.write(image)
+
+        # 화면에 표시 (옵션)
+        cv2.imshow('MediaPipe Holistic - Video', image)
+
+        # 'q' 키로 중단 가능
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            print("\n⏸️ 사용자가 중단했습니다.")
             break
 
 cap.release()
+if save_output:
+    out.release()
+    print(f"\n💾 결과 저장 완료: output_result.mp4")
+
 cv2.destroyAllWindows()
-print("👋 프로그램 종료")

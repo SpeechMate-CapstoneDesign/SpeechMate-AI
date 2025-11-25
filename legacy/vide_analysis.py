@@ -183,7 +183,7 @@ if save_output:
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter('output_result.mp4', fourcc, fps, (width, height))
+    out = cv2.VideoWriter('../output_result.mp4', fourcc, fps, (width, height))
 
 frame_count = 0
 start_time = time.time()
