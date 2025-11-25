@@ -159,7 +159,7 @@ def detect_hand_to_face(pose_landmarks, left_hand_landmarks, right_hand_landmark
 # video_source = 0
 
 # 옵션 2: mp4 파일 사용
-video_source = "hand_to_face.mp4"  # 여기에 파일 경로 입력
+video_source = "input.mp4"  # 여기에 파일 경로 입력
 
 cap = cv2.VideoCapture(video_source)
 
