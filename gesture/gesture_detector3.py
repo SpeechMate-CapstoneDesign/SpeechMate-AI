@@ -45,16 +45,11 @@ class GestureDetector:
         """파라미터 설정"""
         # 공통
         self.VISIBILITY_THRESHOLD = 0.3
-        self.FACE_VISIBILITY_THRESHOLD = 0.5  # 얼굴 가시성 임계값
 
         # === Head Pose ===
-        self.NPR_CEILING_THRESHOLD = 0.20
-        self.NPR_FLOOR_THRESHOLD = 0.44
+        self.NPR_CEILING_THRESHOLD = 0.25  # 천장보기 임계값 (더 민감하게)
+        self.NPR_FLOOR_THRESHOLD = 0.44  # 고개숙이기 임계값
         self.POSE_FRAME_COUNT = int(self.fps * 0.8)
-
-        # === Head Bow (고개 숙이기) ===
-        self.HEAD_BOW_THRESHOLD = -0.2
-        self.HEAD_BOW_FRAME_COUNT = 10
 
         # === Lip Bite ===
         self.LIP_BITE_RATIO_THRESHOLD = 0.25
@@ -66,34 +61,37 @@ class GestureDetector:
 
         # === Slant ===
         self.SLANT_RATIO_THRESHOLD = 0.03
-        self.SLANT_FRAME_COUNT = int(self.fps * 1.5)
+        self.SLANT_FRAME_COUNT = int(self.fps * 1)
 
         # === Rigid Attention ===
         self.RIGID_FRAME_COUNT = max(self.fps * 2, 60)
-        self.ATTENTION_DIST_RATIO = 0.5  # 손목이 엉덩이로부터 어깨너비의 50% 이내
-        self.RIGID_MOVEMENT_RATIO = 0.02  # 움직임 표준편차가 어깨너비의 2% 이하
+        self.ATTENTION_DIST_RATIO = 0.5
+        self.RIGID_MOVEMENT_RATIO = 0.02
 
-        # === Blink ===
-        self.EAR_THRESHOLD = 0.20
+        # === Blink (빈도 기반) ===
+        self.EAR_THRESHOLD = 0.23  # 0.20 → 0.23 (더 민감하게)
         self.BLINK_FRAME_COUNT = max(int(self.fps * 0.05), 2)
+        self.FREQUENT_BLINK_WINDOW = int(self.fps * 10)  # 10초 윈도우
+        self.FREQUENT_BLINK_THRESHOLD = 15  # 10초에 15회 이상
 
         # === Head Shake ===
         self.HEAD_SHAKE_THRESHOLD = 0.08
         self.HEAD_SHAKE_FRAME_COUNT = 10
 
-        # === Arms Crossed ===
-        self.ARMS_CROSSED_THRESHOLD = 0.1
+        # === Arms Crossed (팔짱끼기) - 개선된 버전 ===
+        self.ARMS_CROSSED_FRAME_COUNT = int(self.fps * 0.3)  # 0.3초 유지
+        self.ARMS_CROSSED_ELBOW_VISIBILITY = 0.5  # 팔꿈치 가시성 임계값
 
-        # === Hands Behind Back ===
-        self.HANDS_BEHIND_BACK_THRESHOLD = 0.03
+        # === Hands Behind Back (뒷짐) ===
+        self.HANDS_BEHIND_BACK_FRAME_COUNT = int(self.fps * 0.5)  # 0.5초 유지
 
         # === Hand Rubbing ===
-        self.HAND_RUBBING_DISTANCE = 0.15
+        self.HAND_RUBBING_DISTANCE = 0.25  # 0.15 → 0.25 (거리 완화)
         self.HAND_RUBBING_MOVEMENT = 0.015
         self.HAND_RUBBING_FRAME_COUNT = 20
 
         # === Fig Leaf (무화과 잎 자세) ===
-        self.FIG_LEAF_HANDS_CLOSE_THRESHOLD = 100  # 픽셀 거리
+        self.FIG_LEAF_HANDS_CLOSE_THRESHOLD = 150  # 픽셀 거리 (100 → 150으로 완화)
         self.FIG_LEAF_FRAME_COUNT = int(self.fps * 1.0)  # 1초 유지
 
     def _init_state_variables(self):
@@ -102,10 +100,6 @@ class GestureDetector:
         self.pose_status = "Forward"
         self.pose_counter = 0
         self.last_pose_event = ""
-
-        # Head Bow
-        self.head_angles = deque(maxlen=self.HEAD_BOW_FRAME_COUNT)
-        self.last_head_bow_event = False
 
         # Lip Bite
         self.lip_bite_status = False
@@ -127,18 +121,24 @@ class GestureDetector:
         self.rigid_counter = 0
         self.last_rigid_event = False
 
-        # Blink
+        # Blink (빈도 기반)
         self.blink_status_closed = False
         self.blink_counter = 0
+        self.blink_timestamps = deque(maxlen=50)  # 최근 깜빡임 타임스탬프
+        self.last_frequent_blink_event = False
 
         # Head Shake
         self.last_head_shake_event = False
 
-        # Arms Crossed
+        # Arms Crossed (팔짱 - 프레임 카운터)
         self.arms_crossed_status = False
+        self.arms_crossed_counter = 0
+        self.last_arms_crossed_event = False
 
-        # Hands Behind Back
+        # Hands Behind Back (뒷짐 - 프레임 카운터)
         self.hands_behind_back_status = False
+        self.hands_behind_back_counter = 0
+        self.last_hands_behind_back_event = False
 
         # Hand Rubbing
         self.last_hand_rubbing_event = False
@@ -161,9 +161,8 @@ class GestureDetector:
 
     def _init_counters(self):
         """이벤트 카운터 초기화"""
-        self.total_floor_events = 0
+        self.total_head_bow_events = 0  # 고개숙이기 (기존 바닥보기)
         self.total_ceiling_events = 0
-        self.total_head_bow_events = 0
         self.total_lip_bite_events = 0
         self.total_hand_near_face_events = 0
         self.total_slant_events = 0
@@ -178,9 +177,8 @@ class GestureDetector:
 
         # 타임라인 추적
         self.timeline = {
-            '바닥보기': [],
+            '고개숙이기': [],  # 기존 바닥보기
             '천장보기': [],
-            '고개숙이기': [],
             '입술깨물기': [],
             '눈깜빡임': [],
             '고개흔들기': [],
@@ -200,6 +198,7 @@ class GestureDetector:
         }
 
         self.gesture_log = []
+        self.start_time = time.time()
 
     def get_distance_2d(self, lm1, lm2, w, h):
         """2D 픽셀 거리 계산"""
@@ -207,28 +206,7 @@ class GestureDetector:
         x2, y2 = int(lm2.x * w), int(lm2.y * h)
         return math.hypot(x1 - x2, y1 - y2)
 
-    def _check_face_visible(self, face_landmarks):
-        """얼굴이 충분히 보이는지 확인"""
-        if not face_landmarks:
-            return False
-
-        # 주요 얼굴 랜드마크 체크 (코, 이마, 턱)
-        try:
-            nose = face_landmarks.landmark[1]
-            forehead = face_landmarks.landmark[10]
-            chin = face_landmarks.landmark[152]
-
-            # 세 점의 가시성이 모두 임계값 이상이어야 함
-            if (nose.visibility > self.FACE_VISIBILITY_THRESHOLD and
-                    forehead.visibility > self.FACE_VISIBILITY_THRESHOLD and
-                    chin.visibility > self.FACE_VISIBILITY_THRESHOLD):
-                return True
-        except:
-            pass
-
-        return False
-
-    def process_frame(self, image, current_time_str):
+    def process_frame(self, image):
         """한 프레임 처리"""
         height, width, _ = image.shape
         imgRGB = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -240,37 +218,29 @@ class GestureDetector:
         # 현재 프레임에서 새로 발생한 이벤트
         new_events = []
 
-        # 얼굴 가시성 체크
-        face_visible = False
+        # === A. 얼굴 분석 ===
         if results_facemesh.multi_face_landmarks:
-            face_visible = self._check_face_visible(results_facemesh.multi_face_landmarks[0])
-
-        # === A. 얼굴 분석 (얼굴이 보일 때만) ===
-        if face_visible:
             face_events = self._process_face(
                 results_facemesh.multi_face_landmarks[0],
-                width, height, current_time_str
+                width, height
             )
             new_events.extend(face_events)
-        else:
-            # 얼굴이 안 보이면 관련 상태 리셋
-            self._reset_face_states()
 
         # === B. 포즈 분석 ===
         if results_holistic.pose_landmarks:
             pose_events = self._process_pose(
                 results_holistic.pose_landmarks,
-                width, height, current_time_str,
-                face_visible  # 얼굴 가시성 정보 전달
+                width, height
             )
             new_events.extend(pose_events)
 
-        # === C. 손 분석 (얼굴이 보일 때만) ===
-        if face_visible and (results_holistic.left_hand_landmarks or results_holistic.right_hand_landmarks):
+        # === C. 손 분석 ===
+        if results_facemesh.multi_face_landmarks and (
+                results_holistic.left_hand_landmarks or results_holistic.right_hand_landmarks):
             hand_events = self._process_hands(
                 results_holistic,
                 results_facemesh.multi_face_landmarks[0],
-                width, height, current_time_str
+                width, height
             )
             new_events.extend(hand_events)
 
@@ -281,42 +251,13 @@ class GestureDetector:
 
         return processed_image, new_events
 
-    def _reset_face_states(self):
-        """얼굴 관련 상태 리셋"""
-        # Head Pose
-        self.pose_counter = 0
-        self.pose_status = "Forward"
-        self.last_pose_event = ""
-
-        # Head Bow
-        self.head_angles.clear()
-        self.last_head_bow_event = False
-
-        # Lip Bite
-        self.lip_bite_status = False
-        self.lip_bite_counter = 0
-        self.last_lip_bite_event = False
-
-        # Blink
-        self.blink_status_closed = False
-        self.blink_counter = 0
-
-        # Head Shake
-        self.left_ear_positions.clear()
-        self.right_ear_positions.clear()
-        self.last_head_shake_event = False
-
-        # Hand to Face
-        self.hand_face_distances.clear()
-        self.last_hand_to_face_event = None
-
-    def _process_face(self, face_landmarks, width, height, current_time_str):
+    def _process_face(self, face_landmarks, width, height):
         """얼굴 분석"""
         events = []
         landmarks = face_landmarks.landmark
 
         try:
-            # === 1. Head Pose (천장/바닥만) ===
+            # === 1. Head Pose (천장보기/고개숙이기) ===
             current_pose_direction = "Forward"
 
             eye_center_y = landmarks[6].y
@@ -328,11 +269,11 @@ class GestureDetector:
                 avg_npr = (nose_tip_y - eye_center_y) / face_vertical_height
 
                 if avg_npr > self.NPR_FLOOR_THRESHOLD:
-                    current_pose_direction = "Floor"
+                    current_pose_direction = "HeadBow"  # 고개숙이기
                 elif avg_npr < self.NPR_CEILING_THRESHOLD:
                     current_pose_direction = "Ceiling"
 
-            # Head Pose 이벤트 처리
+            # Head Pose 이벤트 처리 (시작/해제)
             if current_pose_direction != "Forward":
                 if current_pose_direction == self.pose_status:
                     self.pose_counter += 1
@@ -343,22 +284,28 @@ class GestureDetector:
 
                 if self.pose_counter >= self.POSE_FRAME_COUNT and self.last_pose_event != self.pose_status:
                     self.last_pose_event = self.pose_status
+                    elapsed = time.time() - self.start_time
+                    time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
 
-                    if self.pose_status == "Floor":
-                        self.total_floor_events += 1
-                        self.timeline['바닥보기'].append(current_time_str)
-                        log_msg = f"[{current_time_str}] 바닥보기"
-                        self.gesture_log.append(log_msg)
-                        print(log_msg)
-                        events.append("바닥보기")
+                    if self.pose_status == "HeadBow":
+                        self.total_head_bow_events += 1
+                        self.timeline['고개숙이기'].append(time_str)
+                        events.append("고개숙이기")
                     elif self.pose_status == "Ceiling":
                         self.total_ceiling_events += 1
-                        self.timeline['천장보기'].append(current_time_str)
-                        log_msg = f"[{current_time_str}] 천장보기"
-                        self.gesture_log.append(log_msg)
-                        print(log_msg)
+                        self.timeline['천장보기'].append(time_str)
                         events.append("천장보기")
             else:
+                # 정면으로 돌아왔을 때 해제 이벤트
+                if self.last_pose_event != "":
+                    elapsed = time.time() - self.start_time
+                    time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+
+                    if self.last_pose_event == "HeadBow":
+                        events.append("고개숙이기 해제")
+                    elif self.last_pose_event == "Ceiling":
+                        events.append("천장보기 해제")
+
                 self.pose_counter = 0
                 self.pose_status = "Forward"
                 self.last_pose_event = ""
@@ -385,17 +332,20 @@ class GestureDetector:
                 if self.lip_bite_counter >= self.LIP_BITE_FRAME_COUNT and not self.last_lip_bite_event:
                     self.last_lip_bite_event = True
                     self.total_lip_bite_events += 1
-                    self.timeline['입술깨물기'].append(current_time_str)
-                    log_msg = f"[{current_time_str}] 입술깨물기"
-                    self.gesture_log.append(log_msg)
-                    print(log_msg)
+                    elapsed = time.time() - self.start_time
+                    time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                    self.timeline['입술깨물기'].append(time_str)
                     events.append("입술깨물기")
             else:
+                if self.last_lip_bite_event:  # 입술을 풀었을 때
+                    elapsed = time.time() - self.start_time
+                    time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                    events.append("입술깨물기 해제")
                 self.lip_bite_status = False
                 self.lip_bite_counter = 0
                 self.last_lip_bite_event = False
 
-            # === 3. Blink ===
+            # === 3. Blink (빈도 기반 - 자주 깜빡이면 감지) ===
             left_v_top = landmarks[386]
             left_v_bottom = landmarks[374]
             left_h_left = landmarks[362]
@@ -419,22 +369,43 @@ class GestureDetector:
                 if avg_ear < self.EAR_THRESHOLD:
                     current_blink = True
 
+            # 눈 감김 감지
             if current_blink:
                 self.blink_counter += 1
                 self.blink_status_closed = True
             else:
+                # 눈을 떴을 때 - 깜빡임 완료
                 if self.blink_counter >= self.BLINK_FRAME_COUNT:
+                    # 깜빡임 1회 기록
+                    current_time = time.time()
+                    self.blink_timestamps.append(current_time)
                     self.total_blink_events += 1
-                    self.timeline['눈깜빡임'].append(current_time_str)
-                    log_msg = f"[{current_time_str}] 눈깜빡임"
-                    self.gesture_log.append(log_msg)
-                    print(log_msg)
-                    events.append("눈깜빡임")
+
+                    # 최근 10초 동안의 깜빡임 횟수 계산
+                    recent_blinks = [t for t in self.blink_timestamps
+                                     if current_time - t <= 10.0]
+                    blink_count = len(recent_blinks)
+
+                    # 10초에 15회 이상 깜빡이면 "잦은 눈깜빡임" 감지
+                    if blink_count >= self.FREQUENT_BLINK_THRESHOLD:
+                        if not self.last_frequent_blink_event:
+                            self.last_frequent_blink_event = True
+                            elapsed = time.time() - self.start_time
+                            time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                            self.timeline['눈깜빡임'].append(time_str)
+                            events.append(f"잦은 눈깜빡임 ({blink_count}회/10초)")
+                    else:
+                        # 빈도가 낮아지면 해제
+                        if self.last_frequent_blink_event:
+                            elapsed = time.time() - self.start_time
+                            time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                            events.append("잦은 눈깜빡임 해제")
+                        self.last_frequent_blink_event = False
 
                 self.blink_counter = 0
                 self.blink_status_closed = False
 
-            # === 4. Head Shake ===
+            # === 4. Head Shake (해제 이벤트 추가) ===
             left_ear = landmarks[234]
             right_ear = landmarks[454]
 
@@ -449,15 +420,18 @@ class GestureDetector:
                     if not self.last_head_shake_event:
                         self.last_head_shake_event = True
                         self.total_head_shake_events += 1
-                        self.timeline['고개흔들기'].append(current_time_str)
-                        log_msg = f"[{current_time_str}] 고개흔들기"
-                        self.gesture_log.append(log_msg)
-                        print(log_msg)
+                        elapsed = time.time() - self.start_time
+                        time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                        self.timeline['고개흔들기'].append(time_str)
                         events.append("고개흔들기")
 
                     self.left_ear_positions.clear()
                     self.right_ear_positions.clear()
                 else:
+                    if self.last_head_shake_event:
+                        elapsed = time.time() - self.start_time
+                        time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                        events.append("고개흔들기 해제")
                     self.last_head_shake_event = False
 
         except Exception as e:
@@ -465,47 +439,13 @@ class GestureDetector:
 
         return events
 
-    def _process_pose(self, pose_landmarks, width, height, current_time_str, face_visible):
+    def _process_pose(self, pose_landmarks, width, height):
         """포즈 분석"""
         events = []
         landmarks = pose_landmarks.landmark
 
         try:
-            # === 1. Head Bow (고개 숙이기) - 얼굴이 보일 때만 ===
-            if face_visible:
-                nose = landmarks[self.mp_holistic.PoseLandmark.NOSE.value]
-                left_shoulder = landmarks[self.mp_holistic.PoseLandmark.LEFT_SHOULDER.value]
-                right_shoulder = landmarks[self.mp_holistic.PoseLandmark.RIGHT_SHOULDER.value]
-
-                if (nose.visibility > self.VISIBILITY_THRESHOLD and
-                        left_shoulder.visibility > self.VISIBILITY_THRESHOLD and
-                        right_shoulder.visibility > self.VISIBILITY_THRESHOLD):
-
-                    shoulder_mid_y = (left_shoulder.y + right_shoulder.y) / 2
-                    head_position = nose.y - shoulder_mid_y
-
-                    self.head_angles.append(head_position)
-
-                    if len(self.head_angles) >= self.HEAD_BOW_FRAME_COUNT:
-                        current_angle = self.head_angles[-1]
-
-                        if current_angle > self.HEAD_BOW_THRESHOLD:
-                            recent_bowing = sum(1 for angle in list(self.head_angles)[-5:]
-                                                if angle > self.HEAD_BOW_THRESHOLD)
-                            if recent_bowing >= 3:
-                                if not self.last_head_bow_event:
-                                    self.last_head_bow_event = True
-                                    self.total_head_bow_events += 1
-                                    self.timeline['고개숙이기'].append(current_time_str)
-                                    log_msg = f"[{current_time_str}] 고개숙이기"
-                                    self.gesture_log.append(log_msg)
-                                    print(log_msg)
-                                    events.append("고개숙이기")
-                                self.head_angles.clear()
-                        else:
-                            self.last_head_bow_event = False
-
-            # === 2. Slant & Rigid ===
+            # === 1. Slant & Rigid ===
             left_shoulder = landmarks[self.mp_holistic.PoseLandmark.LEFT_SHOULDER.value]
             right_shoulder = landmarks[self.mp_holistic.PoseLandmark.RIGHT_SHOULDER.value]
 
@@ -515,7 +455,7 @@ class GestureDetector:
                 shoulder_width_px = self.get_distance_2d(left_shoulder, right_shoulder, width, height)
                 shoulder_y_diff_px = abs(int(left_shoulder.y * height) - int(right_shoulder.y * height))
 
-                # Slant
+                # Slant (시작/해제)
                 slant_ratio = 0.0
                 if shoulder_width_px > 0:
                     slant_ratio = shoulder_y_diff_px / shoulder_width_px
@@ -529,18 +469,20 @@ class GestureDetector:
                     if self.slant_counter >= self.SLANT_FRAME_COUNT and not self.last_slant_event:
                         self.last_slant_event = True
                         self.total_slant_events += 1
-                        self.timeline['비스듬한자세'].append(current_time_str)
-                        log_msg = f"[{current_time_str}] 비스듬한자세"
-                        self.gesture_log.append(log_msg)
-                        print(log_msg)
+                        elapsed = time.time() - self.start_time
+                        time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                        self.timeline['비스듬한자세'].append(time_str)
                         events.append("비스듬한자세")
                 else:
+                    if self.last_slant_event:  # 자세를 바로잡았을 때
+                        elapsed = time.time() - self.start_time
+                        time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                        events.append("비스듬한자세 해제")
                     self.slant_status = False
                     self.slant_counter = 0
                     self.last_slant_event = False
 
-                # === Rigid (경직된 차려자세) ===
-                # 어깨 너비가 충분히 보일 때만 분석
+                # Rigid (시작/해제)
                 if shoulder_width_px > 10:
                     left_wrist = landmarks[self.mp_holistic.PoseLandmark.LEFT_WRIST.value]
                     right_wrist = landmarks[self.mp_holistic.PoseLandmark.RIGHT_WRIST.value]
@@ -552,40 +494,31 @@ class GestureDetector:
                             left_hip.visibility > self.VISIBILITY_THRESHOLD and
                             right_hip.visibility > self.VISIBILITY_THRESHOLD):
 
-                        # 동적 임계값 계산 (어깨 너비 기준)
-                        dynamic_attention_thresh = shoulder_width_px * self.ATTENTION_DIST_RATIO  # 50%
-                        dynamic_rigid_thresh = shoulder_width_px * self.RIGID_MOVEMENT_RATIO  # 2%
+                        dynamic_attention_thresh = shoulder_width_px * self.ATTENTION_DIST_RATIO
+                        dynamic_rigid_thresh = shoulder_width_px * self.RIGID_MOVEMENT_RATIO
 
-                        # 1단계: 차렷자세 감지 (손목이 엉덩이 근처)
                         dist_l_wrist_hip = self.get_distance_2d(left_wrist, left_hip, width, height)
                         dist_r_wrist_hip = self.get_distance_2d(right_wrist, right_hip, width, height)
 
                         is_attention_pose = (dist_l_wrist_hip < dynamic_attention_thresh and
                                              dist_r_wrist_hip < dynamic_attention_thresh)
 
-                        # 2단계: 손목 위치 히스토리 수집 (2초간)
                         lw_x_px, lw_y_px = int(left_wrist.x * width), int(left_wrist.y * height)
                         rw_x_px, rw_y_px = int(right_wrist.x * width), int(right_wrist.y * height)
                         self.left_wrist_history.append((lw_x_px, lw_y_px))
                         self.right_wrist_history.append((rw_x_px, rw_y_px))
 
-                        # 3단계: 경직 감지 (움직임 표준편차 계산)
                         is_rigid = False
                         if len(self.left_wrist_history) == self.RIGID_FRAME_COUNT:
-                            # 각 손목의 X, Y 좌표 표준편차 계산
                             l_std_x = np.std([pos[0] for pos in self.left_wrist_history])
                             l_std_y = np.std([pos[1] for pos in self.left_wrist_history])
                             r_std_x = np.std([pos[0] for pos in self.right_wrist_history])
                             r_std_y = np.std([pos[1] for pos in self.right_wrist_history])
-
-                            # 평균 움직임 표준편차
                             movement_std = (l_std_x + l_std_y + r_std_x + r_std_y) / 4.0
 
-                            # 움직임이 임계값보다 작으면 경직
                             if movement_std < dynamic_rigid_thresh:
                                 is_rigid = True
 
-                        # 4단계: 최종 판정 (차렷자세 + 경직)
                         current_rigid_pose = is_attention_pose and is_rigid
 
                         if current_rigid_pose:
@@ -595,38 +528,20 @@ class GestureDetector:
                             if not self.last_rigid_event:
                                 self.last_rigid_event = True
                                 self.total_rigid_events += 1
-                                self.timeline['경직된차려'].append(current_time_str)
-                                log_msg = f"[{current_time_str}] 경직된차려 (움직임 표준편차: {movement_std:.1f}px)"
-                                self.gesture_log.append(log_msg)
-                                print(log_msg)
+                                elapsed = time.time() - self.start_time
+                                time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                                self.timeline['경직된차려'].append(time_str)
                                 events.append("경직된차려")
                         else:
+                            if self.last_rigid_event:  # 경직을 풀었을 때
+                                elapsed = time.time() - self.start_time
+                                time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                                events.append("경직된차려 해제")
                             self.rigid_status = False
                             self.rigid_counter = 0
                             self.last_rigid_event = False
 
-            # === 3. Arms Crossed ===
-            left_wrist = landmarks[self.mp_holistic.PoseLandmark.LEFT_WRIST.value]
-            right_wrist = landmarks[self.mp_holistic.PoseLandmark.RIGHT_WRIST.value]
-            left_shoulder = landmarks[self.mp_holistic.PoseLandmark.LEFT_SHOULDER.value]
-            right_shoulder = landmarks[self.mp_holistic.PoseLandmark.RIGHT_SHOULDER.value]
-
-            left_wrist_near_right_shoulder = abs(left_wrist.x - right_shoulder.x) < self.ARMS_CROSSED_THRESHOLD
-            right_wrist_near_left_shoulder = abs(right_wrist.x - left_shoulder.x) < self.ARMS_CROSSED_THRESHOLD
-
-            if left_wrist_near_right_shoulder and right_wrist_near_left_shoulder:
-                if not self.arms_crossed_status:
-                    self.arms_crossed_status = True
-                    self.total_arms_crossed_events += 1
-                    self.timeline['팔짱끼기'].append(current_time_str)
-                    log_msg = f"[{current_time_str}] 팔짱끼기"
-                    self.gesture_log.append(log_msg)
-                    print(log_msg)
-                    events.append("팔짱끼기")
-            else:
-                self.arms_crossed_status = False
-
-            # === 4. Hands Behind Back ===
+            # === 2. 팔짱끼기 (Arms Crossed) - 한쪽 팔만 교차해도 감지 + 해제 ===
             left_wrist = landmarks[self.mp_holistic.PoseLandmark.LEFT_WRIST.value]
             right_wrist = landmarks[self.mp_holistic.PoseLandmark.RIGHT_WRIST.value]
             left_elbow = landmarks[self.mp_holistic.PoseLandmark.LEFT_ELBOW.value]
@@ -634,28 +549,117 @@ class GestureDetector:
             left_shoulder = landmarks[self.mp_holistic.PoseLandmark.LEFT_SHOULDER.value]
             right_shoulder = landmarks[self.mp_holistic.PoseLandmark.RIGHT_SHOULDER.value]
 
-            left_wrist_hidden = left_wrist.visibility < 0.3
-            right_wrist_hidden = right_wrist.visibility < 0.3
-            left_elbow_visible = left_elbow.visibility > 0.5
-            right_elbow_visible = right_elbow.visibility > 0.5
-            left_elbow_behind = left_elbow.z > left_shoulder.z + self.HANDS_BEHIND_BACK_THRESHOLD
-            right_elbow_behind = right_elbow.z > right_shoulder.z + self.HANDS_BEHIND_BACK_THRESHOLD
+            current_arms_crossed = False
 
-            if (left_wrist_hidden and right_wrist_hidden and
-                    left_elbow_visible and right_elbow_visible and
-                    left_elbow_behind and right_elbow_behind):
-                if not self.hands_behind_back_status:
-                    self.hands_behind_back_status = True
+            # 가시성 체크 (한쪽만 보여도 됨)
+            left_visible = left_elbow.visibility > self.ARMS_CROSSED_ELBOW_VISIBILITY
+            right_visible = right_elbow.visibility > self.ARMS_CROSSED_ELBOW_VISIBILITY
+
+            if left_visible or right_visible:
+                # 몸통 중심 계산
+                body_center_x = (left_shoulder.x + right_shoulder.x) / 2
+
+                # 각 팔의 교차 여부 개별 확인
+                left_arm_crossed = False
+                right_arm_crossed = False
+
+                # 왼팔 체크
+                if left_visible:
+                    left_elbow_crossed = left_elbow.x > body_center_x  # 왼팔꿈치가 중심보다 오른쪽
+                    left_range_min = body_center_x
+                    left_range_max = left_shoulder.x + 0.15
+                    left_elbow_inside = left_range_min < left_elbow.x < left_range_max
+
+                    # 왼손목 체크 (보이면)
+                    left_wrist_ok = True
+                    if left_wrist.visibility > 0.5:
+                        left_wrist_ok = left_wrist.x < body_center_x  # 왼손목은 중심보다 왼쪽
+
+                    left_arm_crossed = left_elbow_crossed and left_elbow_inside and left_wrist_ok
+
+                # 오른팔 체크
+                if right_visible:
+                    right_elbow_crossed = right_elbow.x < body_center_x  # 오른팔꿈치가 중심보다 왼쪽
+                    right_range_min = right_shoulder.x - 0.15
+                    right_range_max = body_center_x
+                    right_elbow_inside = right_range_min < right_elbow.x < right_range_max
+
+                    # 오른손목 체크 (보이면)
+                    right_wrist_ok = True
+                    if right_wrist.visibility > 0.5:
+                        right_wrist_ok = right_wrist.x > body_center_x  # 오른손목은 중심보다 오른쪽
+
+                    right_arm_crossed = right_elbow_crossed and right_elbow_inside and right_wrist_ok
+
+                # 최종 판정: 한쪽만 교차해도 OK
+                current_arms_crossed = left_arm_crossed or right_arm_crossed
+
+            # 팔짱 이벤트 처리 (시작/해제)
+            if current_arms_crossed:
+                self.arms_crossed_counter += 1
+                if (self.arms_crossed_counter >= self.ARMS_CROSSED_FRAME_COUNT and
+                        not self.last_arms_crossed_event):
+                    self.last_arms_crossed_event = True
+                    self.total_arms_crossed_events += 1
+                    elapsed = time.time() - self.start_time
+                    time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                    self.timeline['팔짱끼기'].append(time_str)
+                    events.append("팔짱끼기")
+            else:
+                if self.last_arms_crossed_event:  # 팔짱을 풀었을 때
+                    elapsed = time.time() - self.start_time
+                    time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                    events.append("팔짱끼기 해제")
+                self.arms_crossed_counter = 0
+                self.last_arms_crossed_event = False
+
+            # === 3. 뒷짐 (Hands Behind Back) + 해제 - 한쪽만 감지 ===
+            left_wrist = landmarks[self.mp_holistic.PoseLandmark.LEFT_WRIST.value]
+            right_wrist = landmarks[self.mp_holistic.PoseLandmark.RIGHT_WRIST.value]
+            left_elbow = landmarks[self.mp_holistic.PoseLandmark.LEFT_ELBOW.value]
+            right_elbow = landmarks[self.mp_holistic.PoseLandmark.RIGHT_ELBOW.value]
+            left_shoulder = landmarks[self.mp_holistic.PoseLandmark.LEFT_SHOULDER.value]
+            right_shoulder = landmarks[self.mp_holistic.PoseLandmark.RIGHT_SHOULDER.value]
+
+            current_hands_behind = False
+
+            # 각 팔 개별 체크
+            left_hand_behind = False
+            right_hand_behind = False
+
+            # 왼쪽 팔 체크: 손목 안 보이고 AND 팔꿈치가 어깨보다 뒤에
+            left_wrist_hidden = left_wrist.visibility < 0.4
+            left_elbow_behind = left_elbow.z > left_shoulder.z + 0.05
+            left_hand_behind = left_wrist_hidden and left_elbow_behind
+
+            # 오른쪽 팔 체크: 손목 안 보이고 AND 팔꿈치가 어깨보다 뒤에
+            right_wrist_hidden = right_wrist.visibility < 0.4
+            right_elbow_behind = right_elbow.z > right_shoulder.z + 0.05
+            right_hand_behind = right_wrist_hidden and right_elbow_behind
+
+            # 최종 판정: 한쪽만 뒷짐져도 OK
+            current_hands_behind = left_hand_behind or right_hand_behind
+
+            # 뒷짐 이벤트 처리 (시작/해제)
+            if current_hands_behind:
+                self.hands_behind_back_counter += 1
+                if (self.hands_behind_back_counter >= self.HANDS_BEHIND_BACK_FRAME_COUNT and
+                        not self.last_hands_behind_back_event):
+                    self.last_hands_behind_back_event = True
                     self.total_hands_behind_back_events += 1
-                    self.timeline['뒷짐'].append(current_time_str)
-                    log_msg = f"[{current_time_str}] 뒷짐"
-                    self.gesture_log.append(log_msg)
-                    print(log_msg)
+                    elapsed = time.time() - self.start_time
+                    time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                    self.timeline['뒷짐'].append(time_str)
                     events.append("뒷짐")
             else:
-                self.hands_behind_back_status = False
+                if self.last_hands_behind_back_event:  # 뒷짐을 풀었을 때
+                    elapsed = time.time() - self.start_time
+                    time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                    events.append("뒷짐 해제")
+                self.hands_behind_back_counter = 0
+                self.last_hands_behind_back_event = False
 
-            # === 5. Fig Leaf (무화과 잎 자세) ===
+            # === 4. Fig Leaf (무화과 잎 자세) + 해제 ===
             left_wrist = landmarks[self.mp_holistic.PoseLandmark.LEFT_WRIST.value]
             right_wrist = landmarks[self.mp_holistic.PoseLandmark.RIGHT_WRIST.value]
             left_hip = landmarks[self.mp_holistic.PoseLandmark.LEFT_HIP.value]
@@ -669,8 +673,12 @@ class GestureDetector:
                 hands_center_y = (left_wrist.y + right_wrist.y) / 2.0
 
                 current_fig_leaf_pose = False
+                # 조건 1: 양손이 가까이 모여 있음
                 if dist_hands < self.FIG_LEAF_HANDS_CLOSE_THRESHOLD:
-                    if hands_center_y > hip_center_y:
+                    # 조건 2: 손이 엉덩이와 비슷한 높이 또는 약간 아래
+                    # (엉덩이 위 10% ~ 엉덩이 아래까지)
+                    y_diff = hands_center_y - hip_center_y
+                    if -0.1 < y_diff:  # 엉덩이보다 10% 위까지 허용
                         current_fig_leaf_pose = True
 
                 if current_fig_leaf_pose:
@@ -680,12 +688,15 @@ class GestureDetector:
                     if self.fig_leaf_counter >= self.FIG_LEAF_FRAME_COUNT and not self.last_fig_leaf_event:
                         self.last_fig_leaf_event = True
                         self.total_fig_leaf_events += 1
-                        self.timeline['무화과잎자세'].append(current_time_str)
-                        log_msg = f"[{current_time_str}] 무화과잎자세"
-                        self.gesture_log.append(log_msg)
-                        print(log_msg)
+                        elapsed = time.time() - self.start_time
+                        time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                        self.timeline['무화과잎자세'].append(time_str)
                         events.append("무화과잎자세")
                 else:
+                    if self.last_fig_leaf_event:  # 자세를 풀었을 때
+                        elapsed = time.time() - self.start_time
+                        time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                        events.append("무화과잎자세 해제")
                     self.fig_leaf_status = False
                     self.fig_leaf_counter = 0
                     self.last_fig_leaf_event = False
@@ -695,7 +706,7 @@ class GestureDetector:
 
         return events
 
-    def _process_hands(self, results_holistic, face_landmarks, width, height, current_time_str):
+    def _process_hands(self, results_holistic, face_landmarks, width, height):
         """손 분석"""
         events = []
 
@@ -717,10 +728,9 @@ class GestureDetector:
                         self.total_hand_to_face_events[face_region] = 0
 
                     self.total_hand_to_face_events[face_region] += 1
-                    self.timeline[face_region].append(current_time_str)
-                    log_msg = f"[{current_time_str}] {face_region}"
-                    self.gesture_log.append(log_msg)
-                    print(log_msg)
+                    elapsed = time.time() - self.start_time
+                    time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                    self.timeline[face_region].append(time_str)
                     events.append(face_region)
             else:
                 self.last_hand_to_face_event = None
@@ -732,10 +742,9 @@ class GestureDetector:
                 if not self.last_hand_rubbing_event:
                     self.last_hand_rubbing_event = True
                     self.total_hand_rubbing_events += 1
-                    self.timeline['손비비기'].append(current_time_str)
-                    log_msg = f"[{current_time_str}] 손비비기"
-                    self.gesture_log.append(log_msg)
-                    print(log_msg)
+                    elapsed = time.time() - self.start_time
+                    time_str = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+                    self.timeline['손비비기'].append(time_str)
                     events.append("손비비기")
             else:
                 self.last_hand_rubbing_event = False
@@ -788,7 +797,8 @@ class GestureDetector:
                 point = hand_landmarks.landmark[idx]
                 distance_x = abs(point.x - face_center_x)
 
-                if distance_x > face_width * 1.0 or point.y > chin.y + face_height_bottom * 0.3:
+                # 감지 범위 확대: face_width * 1.0 → 1.5
+                if distance_x > face_width * 1.5 or point.y > chin.y + face_height_bottom * 0.5:
                     continue
 
                 distances = {}
@@ -821,22 +831,25 @@ class GestureDetector:
                 left_ear_dist = math.sqrt(
                     (point.x - left_ear_center[0]) ** 2 + (point.y - left_ear_center[1]) ** 2
                 )
-                if left_ear_dist < 0.15:
+                # 귀 감지 범위 확대: 0.15 → 0.20
+                if left_ear_dist < 0.20:
                     distances['왼쪽귀터치'] = left_ear_dist
 
                 right_ear_dist = math.sqrt(
                     (point.x - right_ear_center[0]) ** 2 + (point.y - right_ear_center[1]) ** 2
                 )
-                if right_ear_dist < 0.15:
+                if right_ear_dist < 0.20:
                     distances['오른쪽귀터치'] = right_ear_dist
 
                 if distances:
                     min_region = min(distances, key=distances.get)
                     min_distance = distances[min_region]
 
-                    if min_distance < min_distance_overall:
-                        min_distance_overall = min_distance
-                        closest_region = min_region
+                    # 최대 거리 임계값 추가: 너무 멀면 감지 안 함
+                    if min_distance < 0.20:  # 새로 추가
+                        if min_distance < min_distance_overall:
+                            min_distance_overall = min_distance
+                            closest_region = min_region
 
             return closest_region
 
@@ -862,8 +875,14 @@ class GestureDetector:
         return None
 
     def _detect_hand_rubbing(self, left_hand_landmarks, right_hand_landmarks):
-        """손 비비기 감지"""
+        """손 비비기 감지 (팔짱끼기/뒷짐/얼굴터치 중에는 감지 안 됨)"""
         if not left_hand_landmarks or not right_hand_landmarks:
+            return False
+
+        # 팔짱끼기, 뒷짐, 또는 얼굴터치 중이면 손비비기 감지 안 함
+        if (self.last_arms_crossed_event or
+                self.last_hands_behind_back_event or
+                self.last_hand_to_face_event is not None):
             return False
 
         def get_palm_center(hand_landmarks):
@@ -965,9 +984,8 @@ class GestureDetector:
     def get_statistics(self):
         """통계 정보 반환"""
         stats = {
-            '바닥보기': self.total_floor_events,
-            '천장보기': self.total_ceiling_events,
             '고개숙이기': self.total_head_bow_events,
+            '천장보기': self.total_ceiling_events,
             '입술깨물기': self.total_lip_bite_events,
             '눈깜빡임': self.total_blink_events,
             '고개흔들기': self.total_head_shake_events,
@@ -985,76 +1003,6 @@ class GestureDetector:
 
         return stats
 
-    def save_log(self, output_path, video_path, processing_time, total_frames):
-        """로그 파일 저장"""
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write("=" * 80 + "\n")
-            f.write("                     비언어 행동 분석 결과\n")
-            f.write("=" * 80 + "\n\n")
-
-            f.write(f"동영상: {video_path}\n")
-            f.write(f"처리 시간: {processing_time:.2f}초\n")
-            f.write(f"총 프레임: {total_frames}\n")
-            f.write(f"FPS: {self.fps}\n\n")
-
-            f.write("=" * 80 + "\n")
-            f.write("                          통계 요약\n")
-            f.write("=" * 80 + "\n\n")
-
-            # 통계를 카테고리별로 정리
-            categories = {
-                '머리 움직임': ['바닥보기', '천장보기', '고개숙이기', '고개흔들기'],
-                '얼굴 표정': ['입술깨물기', '눈깜빡임'],
-                '자세': ['비스듬한자세', '경직된차려', '무화과잎자세'],
-                '팔 동작': ['팔짱끼기', '뒷짐', '손비비기'],
-                '손-얼굴 터치': ['머리터치', '이마터치', '코터치', '입술터치', '턱터치', '왼쪽귀터치', '오른쪽귀터치']
-            }
-
-            for category, gestures in categories.items():
-                f.write(f"[{category}]\n")
-                for gesture in gestures:
-                    count = 0
-                    if gesture in ['바닥보기', '천장보기', '고개숙이기', '입술깨물기', '눈깜빡임',
-                                   '고개흔들기', '비스듬한자세', '경직된차려', '팔짱끼기', '뒷짐',
-                                   '손비비기', '무화과잎자세']:
-                        count = getattr(self, f'total_{self._get_counter_name(gesture)}_events', 0)
-                    else:  # 손-얼굴 터치
-                        count = self.total_hand_to_face_events.get(gesture, 0)
-
-                    timeline = self.timeline.get(gesture, [])
-
-                    if count > 0:
-                        timeline_str = ', '.join(timeline) if timeline else '-'
-                        f.write(f"  • {gesture}: {count}회\n")
-                        f.write(f"    타임라인: {timeline_str}\n")
-
-                f.write("\n")
-
-            f.write("=" * 80 + "\n")
-            f.write("                        상세 로그\n")
-            f.write("=" * 80 + "\n\n")
-
-            for log in self.gesture_log:
-                f.write(log + "\n")
-
-    def _get_counter_name(self, gesture):
-        """제스처 이름을 카운터 변수명으로 변환"""
-        mapping = {
-            '바닥보기': 'floor',
-            '천장보기': 'ceiling',
-            '고개숙이기': 'head_bow',
-            '입술깨물기': 'lip_bite',
-            '눈깜빡임': 'blink',
-            '고개흔들기': 'head_shake',
-            '비스듬한자세': 'slant',
-            '경직된차려': 'rigid',
-            '팔짱끼기': 'arms_crossed',
-            '뒷짐': 'hands_behind_back',
-            '손비비기': 'hand_rubbing',
-            '무화과잎자세': 'fig_leaf'
-        }
-        return mapping.get(gesture, '')
-
     def close(self):
         """리소스 정리"""
         self.holistic.close()
@@ -1062,106 +1010,136 @@ class GestureDetector:
 
 
 # ========================================
-# MP4 동영상 분석
+# 웹캠 실시간 분석
 # ========================================
 
-def analyze_video(video_path, output_video_path=None, output_log_path=None):
-    """MP4 동영상 제스처 분석"""
-
-    # 기본 출력 경로 설정
-    if output_video_path is None:
-        output_video_path = video_path.replace('.mp4', '_analyzed.mp4')
-    if output_log_path is None:
-        output_log_path = video_path.replace('.mp4', '_log.txt')
-
-    # 동영상 열기
-    cap = cv2.VideoCapture(video_path)
+def run_webcam():
+    """웹캠 실시간 제스처 감지"""
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
     if not cap.isOpened():
-        print(f"❌ 동영상을 열 수 없습니다: {video_path}")
+        print("❌ 카메라를 열 수 없습니다.")
         return
 
-    # 동영상 정보
     fps = int(cap.get(cv2.CAP_PROP_FPS))
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if fps == 0:
+        fps = 30
 
     print("\n" + "=" * 60)
-    print("📹 MP4 동영상 제스처 분석 시작!")
+    print("📹 웹캠 제스처 감지 시작!")
     print("=" * 60)
-    print(f"📂 입력 파일: {video_path}")
-    print(f"📊 동영상 정보: {width}x{height} @ {fps}fps")
-    print(f"🎬 총 프레임: {total_frames}")
-    print(f"⏱️  예상 시간: {total_frames / fps:.1f}초")
+    print("⌨️  조작법:")
+    print("  - ESC: 종료")
+    print("  - 's': 현재 통계 출력")
+    print("  - 'r': 통계 초기화")
     print("=" * 60)
-    print("🎥 분석 중...\n")
+    print("🎥 감지 중...\n")
 
-    # 제스처 감지기 초기화
     detector = GestureDetector(fps=fps)
 
-    # 결과 동영상 저장 설정
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
-
-    start_time = time.time()
     frame_count = 0
 
-    while True:
+    while cap.isOpened():
         success, image = cap.read()
         if not success:
-            break
+            continue
 
         frame_count += 1
 
-        # 현재 시간 계산
-        current_time_sec = frame_count / fps
-        current_time_str = time.strftime('%H:%M:%S', time.gmtime(current_time_sec))
-
-        # 진행률 표시 (2초마다)
-        if frame_count % (fps * 2) == 0 or frame_count == 1:
-            progress = (frame_count / total_frames) * 100
-            print(f"처리 중... {progress:.1f}% ({frame_count}/{total_frames})")
-
         # 프레임 처리
-        processed_image, new_events = detector.process_frame(image, current_time_str)
+        processed_image, new_events = detector.process_frame(image)
 
-        # 결과 동영상에 저장
-        out.write(processed_image)
+        # 새로운 이벤트 발생 시 콘솔 출력
+        if new_events:
+            elapsed = time.time() - detector.start_time
+            current_time = time.strftime('%H:%M:%S', time.gmtime(elapsed))
+            for event in new_events:
+                print(f"[{current_time}] ✅ {event}")
 
-    # 정리
-    cap.release()
-    out.release()
+        # 화면 표시 (좌우 반전, 랜드마크만)
+        cv2.imshow('실시간 제스처 감지', cv2.flip(processed_image, 1))
 
-    end_time = time.time()
-    processing_time = end_time - start_time
+        # 키 입력 처리
+        key = cv2.waitKey(5) & 0xFF
 
-    # 로그 저장
-    detector.save_log(output_log_path, video_path, processing_time, total_frames)
+        if key == 27:  # ESC
+            break
+        elif key == ord('s'):  # 통계 출력
+            print("\n" + "=" * 60)
+            print("📊 현재 통계")
+            print("=" * 60)
 
-    # 최종 통계 출력
+            # 모든 제스처 목록 (0회 포함)
+            all_gestures = [
+                '고개숙이기', '천장보기', '입술깨물기', '눈깜빡임',
+                '고개흔들기', '비스듬한자세', '경직된차려', '팔짱끼기', '뒷짐',
+                '손비비기', '무화과잎자세', '머리터치', '이마터치', '코터치',
+                '입술터치', '턱터치', '왼쪽귀터치', '오른쪽귀터치'
+            ]
+
+            stats = detector.get_statistics()
+
+            for gesture in all_gestures:
+                count = stats.get(gesture, 0)
+                timeline = detector.timeline.get(gesture, [])
+
+                if count > 0:
+                    timeline_str = ', '.join(timeline[:5])
+                    if len(timeline) > 5:
+                        timeline_str += f", ... (총 {len(timeline)}회)"
+                    print(f"{gesture}: {count}회")
+                    print(f"  타임라인: {timeline_str}")
+                else:
+                    print(f"{gesture}: 0회")
+
+            print("=" * 60 + "\n")
+
+        elif key == ord('r'):  # 통계 초기화
+            detector._init_counters()
+            print("\n🔄 통계가 초기화되었습니다.\n")
+
+    # 종료 전 최종 통계 출력
     print("\n" + "=" * 60)
-    print("📊 분석 완료!")
+    print("📊 최종 통계")
     print("=" * 60)
-    print(f"⏱️  처리 시간: {processing_time:.2f}초")
-    print(f"📹 결과 동영상: {output_video_path}")
-    print(f"📝 로그 파일: {output_log_path}")
 
-    print("\n=== 비언어 행동 통계 ===")
+    # 모든 제스처 목록 (0회 포함)
+    all_gestures = [
+        '고개숙이기', '천장보기', '입술깨물기', '눈깜빡임',
+        '고개흔들기', '비스듬한자세', '경직된차려', '팔짱끼기', '뒷짐',
+        '손비비기', '무화과잎자세', '머리터치', '이마터치', '코터치',
+        '입술터치', '턱터치', '왼쪽귀터치', '오른쪽귀터치'
+    ]
+
     stats = detector.get_statistics()
-    for gesture, count in stats.items():
-        if count > 0:
-            timeline = detector.timeline.get(gesture, [])
-            timeline_str = ', '.join(timeline[:5])  # 처음 5개만 표시
-            if len(timeline) > 5:
-                timeline_str += f", ... (총 {len(timeline)}회)"
-            print(f"{gesture}: {count}회 | {timeline_str}")
 
+    for gesture in all_gestures:
+        count = stats.get(gesture, 0)
+        timeline = detector.timeline.get(gesture, [])
+
+        if count > 0:
+            timeline_str = ', '.join(timeline[:10])
+            if len(timeline) > 10:
+                timeline_str += f", ... (총 {len(timeline)}회)"
+            print(f"{gesture}: {count}회")
+            print(f"  타임라인: {timeline_str}")
+        else:
+            print(f"{gesture}: 0회")
+
+    elapsed_time = time.time() - detector.start_time
+    print(f"\n총 실행 시간: {elapsed_time:.1f}초")
+    print(f"처리된 프레임: {frame_count}개")
+    if elapsed_time > 0:
+        print(f"평균 FPS: {frame_count / elapsed_time:.1f}")
     print("=" * 60)
 
+    cap.release()
+    cv2.destroyAllWindows()
     detector.close()
 
-    print("\n✅ 모든 결과가 저장되었습니다!\n")
+    print("\n👋 프로그램 종료\n")
 
 
 # ========================================
@@ -1169,18 +1147,4 @@ def analyze_video(video_path, output_video_path=None, output_log_path=None):
 # ========================================
 
 if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) < 2:
-        print("\n사용법:")
-        print("  python script.py <입력_동영상.mp4> [출력_동영상.mp4] [로그파일.txt]")
-        print("\n예시:")
-        print("  python script.py input.mp4")
-        print("  python script.py input.mp4 output.mp4")
-        print("  python script.py input.mp4 output.mp4 log.txt\n")
-    else:
-        video_path = sys.argv[1]
-        output_video = sys.argv[2] if len(sys.argv) > 2 else None
-        output_log = sys.argv[3] if len(sys.argv) > 3 else None
-
-        analyze_video(video_path, output_video, output_log)
+    run_webcam()
