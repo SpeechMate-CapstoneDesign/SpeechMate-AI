@@ -1,6 +1,6 @@
 import cv2
 import json
-from gesture_detector import GestureDetector
+from gesture_detector_video import GestureDetector
 
 
 class VideoGestureAnalyzer:
